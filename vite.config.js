@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 
 // Change BASE to your GitHub repo name, e.g. "/daf-planner"
 // If using a custom domain or user/org page, set to "/"
-const BASE = "justlebeau.github.io/daf-planner";
+const BASE = "/daf-planner";;
 
 export default defineConfig({
   plugins: [react()],
