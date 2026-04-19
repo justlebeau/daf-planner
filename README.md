@@ -85,3 +85,4 @@ The app uses the **Anthropic Claude API** directly from the browser to:
 ## License
 
 MIT
+
