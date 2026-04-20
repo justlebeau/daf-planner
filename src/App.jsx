@@ -67,7 +67,7 @@ export default function App() {
   const handleAnalyze = async () => {
     if (!holdings.length) return;
     setStrategyLoading(true);
-    const result = await analyzeGivingStrategy(holdings, givingGoal, portfolioTotal);
+    const result = await analyzeGivingStrategy(holdings, givingGoal);
     setStrategy(result);
     setStrategyLoading(false);
   };
