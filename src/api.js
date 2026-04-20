@@ -78,4 +78,43 @@ export function analyzeGivingStrategy(holdings, givingGoal) {
       recommendation: "None of your holdings currently have unrealized gains. Consider waiting for positions to appreciate before donating to your DAF, or contribute cash directly.",
       sellOrder: [],
       totalFromSales: 0,
-      sustainabilityN
+      sustainabilityNote: "Add appreciated positions to unlock tax-efficient giving.",
+      taxNote: "Donating appreciated stock held >1 year avoids capital gains tax entirely.",
+    };
+  }
+
+  let remaining = givingGoal;
+  const sellOrder = [];
+
+  for (const h of scored) {
+    if (remaining <= 0) break;
+    const sharesToSell   = Math.min(Math.ceil(remaining / h.currentPrice), h.shares);
+    const estimatedValue = parseFloat((sharesToSell * h.currentPrice).toFixed(0));
+    sellOrder.push({
+      ticker: h.ticker,
+      sharesToSell,
+      estimatedValue,
+      reason: `${h.gainPct.toFixed(0)}% unrealized gain — highest tax benefit per dollar donated`,
+      timing: "Ensure held >1 year for long-term capital gains treatment",
+    });
+    remaining -= estimatedValue;
+  }
+
+  const totalFromSales = sellOrder.reduce((s, o) => s + o.estimatedValue, 0);
+  const portfolioTotal = holdings.reduce((s, h) => s + (h.currentPrice || 0) * h.shares, 0);
+  const givingRate     = portfolioTotal > 0 ? (givingGoal / portfolioTotal) * 100 : 0;
+
+  const sustainabilityNote = givingRate <= 4
+    ? `At ${givingRate.toFixed(1)}% of portfolio, this giving rate is sustainable — your portfolio should continue growing.`
+    : givingRate <= 7
+    ? `At ${givingRate.toFixed(1)}% of portfolio, this is a moderate rate. Monitor returns to avoid eroding principal.`
+    : `At ${givingRate.toFixed(1)}% of portfolio, this rate may erode principal. Consider reducing the goal or growing the portfolio first.`;
+
+  return {
+    recommendation: `Donate your most appreciated stock directly to your DAF to avoid capital gains tax on $${scored[0].totalGain.toFixed(0)} in unrealized gains. Start with ${scored[0].ticker} (${scored[0].gainPct.toFixed(0)}% gain) for maximum tax efficiency.`,
+    sellOrder,
+    totalFromSales: parseFloat(totalFromSales.toFixed(0)),
+    sustainabilityNote,
+    taxNote: "Donating appreciated stock held >1 year to a DAF avoids all capital gains tax and qualifies for a full fair-market-value deduction.",
+  };
+}
