@@ -1,81 +1,81 @@
-const API_URL = "https://api.anthropic.com/v1/messages";
-const MODEL   = "claude-sonnet-4-20250514";
+// Uses Yahoo Finance v8 quote endpoint — no API key required.
+// A free CORS proxy (allorigins) is used since Yahoo blocks direct browser requests.
 
-async function callClaude(prompt, maxTokens = 800) {
-  const res = await fetch(API_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: maxTokens,
-      messages: [{ role: "user", content: prompt }],
-    }),
-  });
-  if (!res.ok) throw new Error(`API error ${res.status}`);
-  const data = await res.json();
-  const text = data.content?.map(b => b.text || "").join("") || "{}";
-  const clean = text.replace(/```json[\s\S]*?```|```[\s\S]*?```/g, m =>
-    m.replace(/```json\n?|```\n?/g, "")
-  ).trim();
-  return JSON.parse(clean);
+const PROXY = "https://api.allorigins.win/get?url=";
+
+function yahooUrl(ticker) {
+  return encodeURIComponent(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=5y`
+  );
+}
+
+function quoteUrl(ticker) {
+  return encodeURIComponent(
+    `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${ticker}`
+  );
+}
+
+async function fetchJson(url) {
+  const res = await fetch(PROXY + url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const wrapper = await res.json();
+  return JSON.parse(wrapper.contents);
+}
+
+function calc5yrAnnualReturn(closes) {
+  if (!closes || closes.length < 2) return null;
+  const start = closes[0];
+  const end   = closes[closes.length - 1];
+  if (!start || !end) return null;
+  const years = closes.length / 252;
+  return (Math.pow(end / start, 1 / years) - 1) * 100;
 }
 
 export async function fetchStockData(ticker) {
   const t = ticker.trim().toUpperCase();
-  const prompt = `You are a financial data API. For the stock ticker "${t}", return ONLY valid JSON (no markdown, no text outside the JSON) with this exact shape:
-{
-  "ticker": "${t}",
-  "name": "Full Company Name",
-  "currentPrice": 123.45,
-  "previousClose": 120.00,
-  "weekHigh52": 180.00,
-  "weekLow52": 95.00,
-  "avgAnnualReturn5yr": 12.5,
-  "sector": "Technology",
-  "valid": true
-}
-If the ticker is invalid or unknown, return ONLY: {"valid":false,"ticker":"${t}"}
-Use best-estimate figures from your training knowledge. avgAnnualReturn5yr = approximate 5-year annualized total return %.`;
   try {
-    return await callClaude(prompt, 400);
-  } catch {
+    const [chartData, quoteData] = await Promise.all([
+      fetchJson(yahooUrl(t)),
+      fetchJson(quoteUrl(t)),
+    ]);
+
+    const result = quoteData?.quoteResponse?.result?.[0];
+    if (!result) return { valid: false, ticker: t };
+
+    const currentPrice       = result.regularMarketPrice;
+    const previousClose      = result.regularMarketPreviousClose;
+    const weekHigh52         = result.fiftyTwoWeekHigh;
+    const weekLow52          = result.fiftyTwoWeekLow;
+    const name               = result.longName || result.shortName || t;
+    const sector             = result.sector || result.quoteType || "—";
+
+    const closes = chartData?.chart?.result?.[0]?.indicators?.quote?.[0]?.close;
+    const avgAnnualReturn5yr = closes
+      ? parseFloat(calc5yrAnnualReturn(closes.filter(Boolean)).toFixed(1))
+      : null;
+
+    return { ticker: t, name, currentPrice, previousClose, weekHigh52, weekLow52, avgAnnualReturn5yr, sector, valid: true };
+  } catch (err) {
+    console.error(`fetchStockData(${t}):`, err);
     return { valid: false, ticker: t };
   }
 }
 
-export async function analyzeGivingStrategy(holdings, givingGoal, portfolioTotal) {
-  const lines = holdings.map(h => {
-    const gain = ((h.currentPrice - h.costBasis) * h.shares).toFixed(0);
-    return `${h.ticker} (${h.name}): ${h.shares} shares, price $${h.currentPrice?.toFixed(2)}, basis $${h.costBasis?.toFixed(2)}/sh, unrealized gain $${gain}, 5yr avg ${h.avgAnnualReturn5yr ?? "?"}%`;
-  }).join("\n");
+export function analyzeGivingStrategy(holdings, givingGoal) {
+  const scored = holdings
+    .map(h => {
+      const gainPerShare = (h.currentPrice || 0) - (h.costBasis || 0);
+      const totalGain    = gainPerShare * h.shares;
+      const marketValue  = (h.currentPrice || 0) * h.shares;
+      const gainPct      = h.costBasis > 0 ? (gainPerShare / h.costBasis) * 100 : 0;
+      return { ...h, gainPerShare, totalGain, marketValue, gainPct };
+    })
+    .filter(h => h.gainPerShare > 0)
+    .sort((a, b) => b.gainPct - a.gainPct);
 
-  const prompt = `You are a financial advisor. A client has a $${portfolioTotal.toFixed(0)} brokerage portfolio linked to a Donor Advised Fund (DAF). They want to give $${givingGoal.toFixed(0)} per year charitably.
-
-Holdings:
-${lines}
-
-Return ONLY valid JSON (no markdown) with this shape:
-{
-  "recommendation": "2-3 sentence plain-English strategy summary",
-  "sellOrder": [
-    {
-      "ticker": "TICKER",
-      "sharesToSell": 10,
-      "estimatedValue": 1850,
-      "reason": "Why sell this position",
-      "timing": "e.g. Q1, after 1yr holding, immediately"
-    }
-  ],
-  "totalFromSales": 12500,
-  "sustainabilityNote": "One sentence on long-term sustainability",
-  "taxNote": "Key tax consideration for donating appreciated stock to DAF"
-}
-
-Rules: (1) Prioritize most-appreciated positions first — donating appreciated stock to a DAF avoids capital gains tax entirely. (2) Only recommend selling enough to meet the goal. (3) Flag lower-growth or over-weighted positions.`;
-
-  try {
-    return await callClaude(prompt, 1000);
-  } catch {
-    return null;
-  }
-}
+  if (!scored.length) {
+    return {
+      recommendation: "None of your holdings currently have unrealized gains. Consider waiting for positions to appreciate before donating to your DAF, or contribute cash directly.",
+      sellOrder: [],
+      totalFromSales: 0,
+      sustainabilityN
